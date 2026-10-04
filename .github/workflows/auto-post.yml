@@ -1,0 +1,62 @@
+name: Auto Post to Instagram
+
+# PR がマージされたら posts/ の投稿データを Meta Graph API で Instagram へ投稿する
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - "posts/**.md"
+  workflow_dispatch:
+    inputs:
+      post_file:
+        description: "投稿するファイル（空欄なら posts/ 内の最新ファイル）"
+        required: false
+        default: ""
+      dry_run:
+        description: "投稿せず内容のみ確認する"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Detect post file added in this PR
+        id: detect
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          file=$(git diff --name-only --diff-filter=AM "$BASE_SHA" "$MERGE_SHA" -- 'posts/*.md' | sort | tail -n 1)
+          echo "PR で追加・更新された投稿ファイル: ${file:-（なし。最新ファイルを使用）}"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Instagram
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          DEFAULT_IMAGE_URL: ${{ vars.DEFAULT_IMAGE_URL }}
+          GRAPH_API_VERSION: ${{ vars.GRAPH_API_VERSION || 'v23.0' }}
+          POST_FILE: ${{ steps.detect.outputs.file || inputs.post_file }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: python scripts/post_to_sns.py
