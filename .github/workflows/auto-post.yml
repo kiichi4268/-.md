@@ -1,6 +1,6 @@
-name: Auto Post to Instagram
+name: Auto Post to Instagram & Threads
 
-# PR がマージされたら posts/ の投稿データを Meta Graph API で Instagram へ投稿する
+# PR がマージされたら posts/ の投稿データを Instagram（画像・カルーセル・リール）と Threads へ投稿する
 on:
   pull_request:
     types: [closed]
@@ -40,6 +40,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install ffmpeg (for reel video conversion)
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
       - name: Detect post file added in this PR
         id: detect
         if: github.event_name == 'pull_request'
@@ -51,10 +54,12 @@ jobs:
           echo "PR で追加・更新された投稿ファイル: ${file:-（なし。最新ファイルを使用）}"
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
-      - name: Post to Instagram
+      - name: Post to Instagram & Threads
         env:
           META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           DEFAULT_IMAGE_URL: ${{ vars.DEFAULT_IMAGE_URL }}
           GRAPH_API_VERSION: ${{ vars.GRAPH_API_VERSION || 'v23.0' }}
           POST_FILE: ${{ steps.detect.outputs.file || inputs.post_file }}
