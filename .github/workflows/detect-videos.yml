@@ -1,0 +1,67 @@
+name: Detect Videos for Reels
+
+# videos/ に動画が追加されたら、リール投稿の下書き（posts/*.md）を作成して承認待ちPRを動画ごとに作る。
+# PR でキャプションを編集してマージすると auto-post.yml が Instagram・Threads へ投稿する。
+# ※ Settings → Actions → General → 「Allow GitHub Actions to create and approve pull requests」を有効にしてください。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "videos/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: detect-videos
+  cancel-in-progress: false
+
+jobs:
+  create-drafts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create draft posts for new videos
+        id: drafts
+        run: python scripts/create_reel_posts.py
+
+      - name: Open a pull request per draft
+        if: steps.drafts.outputs.created != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATED: ${{ steps.drafts.outputs.created }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base="${GITHUB_REF_NAME}"
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            video=$(sed -n 's/^video:[[:space:]]*//p' "$file" | head -n 1)
+            name=$(basename "${video%.*}")
+            branch="auto-reel/${name//[^A-Za-z0-9_-]/-}"
+            if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+              echo "⏭  $branch は作成済みのためスキップ"
+              continue
+            fi
+            git switch -c "$branch" "origin/$base"
+            git add "$file"
+            git commit -m "Add reel draft for $video"
+            git push -u origin "$branch"
+            gh pr create --base "$base" --head "$branch" \
+              --title "🎬 リール投稿の下書き: $video" \
+              --body "$(printf '%s\n' \
+                "\`$video\` を検出したため、リール投稿の下書き \`$file\` を作成しました。" \
+                "" \
+                "- [ ] キャプション・Threads 投稿文の「【要編集】」をすべて書き換える" \
+                "- [ ] 内容を確認してマージ → Instagram リール・Threads に自動投稿されます")"
+            git switch --detach "origin/$base"
+          done <<< "$CREATED"

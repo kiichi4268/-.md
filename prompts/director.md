@@ -34,7 +34,7 @@
 - リール動画構成・台本（約25秒）
 
 ### 自動投稿用メタデータ（必須）
-PRがマージされると `scripts/post_to_sns.py` がInstagramへ自動投稿します。
+PRがマージされると `scripts/post_to_sns.py` が Instagram と Threads へ自動投稿します。
 投稿ファイルの先頭に、以下のフロントマターを必ず記載してください（画像は公開URLのJPEG）。
 
 ```markdown
@@ -42,8 +42,20 @@ PRがマージされると `scripts/post_to_sns.py` がInstagramへ自動投稿�
 image_url: https://example.com/images/2026-10-10_badminton_nakano.jpg
 # 複数枚（カルーセル、2〜10枚）の場合は image_urls をカンマ区切りで指定
 # image_urls: https://example.com/1.jpg, https://example.com/2.jpg
+# リール投稿の場合は image_url の代わりに videos/ 内の動画を指定（投稿時に 9:16 へ自動変換）
+# video: videos/0817.mov
+# 投稿先（既定は両方。Threads は THREADS_ACCESS_TOKEN 設定時のみ）
+# platforms: instagram, threads
 ---
 
 ### 📝 Instagram キャプション案
 （ここから下の【タイトル・フック】〜【ハッシュタグ】がキャプションとして投稿されます）
+
+### 🧵 Threads 投稿文
+（Threads に投稿される本文。100〜150文字程度・最大500文字。無ければキャプションから自動生成）
 ```
+
+### 動画からのリール投稿
+`videos/` に動画（.mov / .mp4 / .m4v）を追加して main にプッシュすると、
+`.github/workflows/detect-videos.yml` が下書き `posts/YYYY-MM-DD_リール_<ファイル名>.md` と承認待ちPRを自動作成します。
+下書きの「【要編集】」をすべて書き換えてからマージしてください（残っていると投稿されません）。
