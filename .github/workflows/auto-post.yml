@@ -35,6 +35,11 @@ jobs:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
           fetch-depth: 0
 
+      - name: Install ffmpeg (for reel video conversion)
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -42,9 +47,6 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install requests requests-toolbelt
-
-      - name: Install ffmpeg (for reel video conversion)
-        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
 
       - name: Detect post file added in this PR
         id: detect
