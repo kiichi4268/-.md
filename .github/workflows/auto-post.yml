@@ -50,7 +50,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          file=$(git diff --name-only --diff-filter=AM "$BASE_SHA" "$MERGE_SHA" -- 'posts/*.md' | sort | tail -n 1)
+          # core.quotePath=false: 日本語ファイル名を "\343..." のようにエスケープさせない
+          file=$(git -c core.quotePath=false diff --name-only --diff-filter=AM "$BASE_SHA" "$MERGE_SHA" -- 'posts/*.md' | sort | tail -n 1)
           echo "PR で追加・更新された投稿ファイル: ${file:-（なし。最新ファイルを使用）}"
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
