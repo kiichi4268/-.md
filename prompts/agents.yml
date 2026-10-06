@@ -1,0 +1,122 @@
+# AI社員レジストリ（プロンプトチェーン定義）
+#
+# - definition: リポジトリ直下の人格・役割定義（人が読む原本）
+#     ※ 直下のファイル名は macOS 由来の NFD（濁点分離）になっているため、
+#       スクリプトは Unicode 正規化（NFC）して照合すること。
+# - prompt:     チェーン実行用プロンプト（出力見出しを固定した機械可読版）
+# - inputs:     前工程から受け取る成果物（key は outputs の名前）
+# - outputs:    この工程が出力する見出し（後工程・post_to_sns.py がこの見出しで抽出する）
+#
+# 実行方式（scripts/generate_content.py で使用予定）
+#   mode: prompt … チェーン全体を1本のプロンプトに組み立てて出力（既定・無料）
+#   mode: api    … 各工程を順番に LLM API へ送り、出力を次工程へ渡す（将来対応）
+
+version: 1
+brand:
+  name: Macachette Sports
+  instagram: "@macachette_sports"
+  blog: https://sportsbackstage1.wordpress.com/
+  common_rules: リポジトリ用（スポーツイベント）.md   # 沢田流の根本思想・4視点フレームワーク（全工程に前置きする）
+
+agents:
+  researcher:
+    label: 🔍 リサーチAI
+    definition: 🔍 リサーチAI（競合・トレンド・キーワード分析）.md
+    prompt: prompts/researcher.md
+    inputs: [brief]
+    outputs: [research]
+
+  director:
+    label: 🎬 ディレクターAI
+    definition: "# 🎬 ディレクターAI（全体統括・進行管理）.md"
+    prompt: prompts/director.md
+    inputs: [brief, research]
+    outputs: [plan]
+
+  writer:
+    label: ✍ ライターAI
+    definition: "# ✍ ライターAI（文章作成・コピーライティング）.md"
+    prompt: prompts/writer.md
+    inputs: [brief, plan]
+    outputs: [instagram_caption, threads_text, x_text, stories_text]
+
+  designer:
+    label: 🎨 デザイナーAI
+    definition: "# 🎨 デザイナーAI（画像構成・ビジュアルデザイン指示）.md"
+    prompt: prompts/designer.md
+    inputs: [brief, plan]
+    outputs: [carousel]
+
+  video:
+    label: 🎬 動画制作AI
+    definition: "# 🎬 動画制作AI（ショート動画・リール台本プランナー）.md"
+    prompt: prompts/video.md
+    inputs: [brief, plan]
+    outputs: [reel_script]
+
+  marketer:
+    label: 📈 マーケターAI
+    definition: 📈 マーケターAI（集客・コンバージョン・LINE導線設計）.md
+    prompt: prompts/marketer.md
+    inputs: [brief, plan, instagram_caption]
+    outputs: [cta]
+
+  qa:
+    label: 🔍 品質管理AI
+    definition: "# 🔍 品質管理AI（校正・コンテンツチェック・品質保証）.md"
+    prompt: prompts/qa.md
+    inputs: [brief, plan, instagram_caption, threads_text, x_text, stories_text, carousel, reel_script, cta]
+    outputs: [qa_report]
+
+  analyst:
+    label: 📊 アナリストAI
+    definition: "# 📊 アナリストAI（数値分析・データ集計・PDCA改善）.md"
+    prompt: prompts/analyst.md
+    inputs: [metrics]
+    outputs: [analysis]
+
+  advisor:
+    label: 🤝 相談役AI
+    definition: "# 🤝 相談役AI（アドバイザー・戦略パートナー・マインドサポート）.md"
+    prompt: prompts/advisor.md
+    inputs: [brief, analysis]
+    outputs: [advice]
+
+# ワンソース・マルチユースのチェーン
+# parallel 内の工程は互いに依存しない（api モードでは並列実行可）
+chains:
+  sns_set:          # 1イベント → IG/X/Threads/note カルーセル + Reels/Shorts/TikTok 台本
+    steps:
+      - researcher
+      - director
+      - parallel: [writer, designer, video]
+      - marketer
+      - qa
+    deliverable: posts/{date}_{sport}_{area}.md
+
+  fill_capacity:    # 埋まっていない枠のテコ入れ（prompts/fill_capacity_template.md を追加で読み込む）
+    extra_prompts: [prompts/fill_capacity_template.md]
+    steps:
+      - director
+      - parallel: [writer, designer, video]
+      - marketer
+      - qa
+    deliverable: posts/{date}_{sport}_{area}_枠埋め.md
+
+  weekly_review:    # 週次PDCA
+    steps:
+      - analyst
+      - advisor
+    deliverable: reports/{date}_weekly.md
+
+# 出力見出し → posts/*.md 内の見出し（post_to_sns.py が抽出に使う見出しと一致させる）
+headings:
+  plan: "## 企画意図・ターゲット訴求ポイント"
+  instagram_caption: "### 📝 Instagram キャプション案"
+  threads_text: "### 🧵 Threads 投稿文"
+  x_text: "### 🐦 X 投稿文"
+  stories_text: "### 📱 ストーリーズ用テキスト案（1080x1920）"
+  carousel: "### 🎨 カルーセル画像構成（Instagram/X/Threads/note 共通）"
+  reel_script: "### 🎬 ショート動画台本（Reels/Shorts/TikTok 共通）"
+  cta: "### 📈 CTA・LINE導線"
+  qa_report: "### 🛡 品質チェック結果"
