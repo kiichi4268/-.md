@@ -82,6 +82,28 @@ agents:
     inputs: [brief, analysis]
     outputs: [advice]
 
+  # ---- マネタイズ用（フェーズ3） ----
+  blog_writer:
+    label: ✍ ライターAI（ブログSEO担当）
+    definition: "# ✍ ライターAI（文章作成・コピーライティング）.md"
+    prompt: prompts/wordpress_seo.md
+    inputs: [brief, research]
+    outputs: [blog_meta, blog_body]
+
+  note_writer:
+    label: ✍ ライターAI（有料note担当）
+    definition: "# ✍ ライターAI（文章作成・コピーライティング）.md"
+    prompt: prompts/note_hybrid.md
+    inputs: [brief, research]
+    outputs: [note_meta, note_free, note_paid]
+
+  sponsor_planner:
+    label: 📈 マーケターAI（協賛提案担当）
+    definition: 📈 マーケターAI（集客・コンバージョン・LINE導線設計）.md
+    prompt: prompts/sponsor_proposal.md
+    inputs: [brief]
+    outputs: [sponsor_proposal]
+
 # ワンソース・マルチユースのチェーン
 # parallel 内の工程は互いに依存しない（api モードでは並列実行可）
 chains:
@@ -103,6 +125,26 @@ chains:
       - qa
     deliverable: posts/{date}_{sport}_{area}_枠埋め.md
 
+  wordpress_seo:    # Sports Backstage 向けSEO記事（アフィリエイト枠付き）
+    steps:
+      - researcher
+      - blog_writer
+      - qa
+    deliverable: wordpress/drafts/{date}_{slug}.md
+
+  note_hybrid:      # 有料note（参加者向け7割・主催者向け3割）
+    steps:
+      - researcher
+      - note_writer
+      - qa
+    deliverable: note/drafts/{date}_{slug}.md
+
+  sponsor_proposal: # 協賛提案書
+    steps:
+      - sponsor_planner
+      - qa
+    deliverable: docs/proposals/{date}_{slug}.md
+
   weekly_review:    # 週次PDCA
     steps:
       - analyst
@@ -120,3 +162,12 @@ headings:
   reel_script: "### 🎬 ショート動画台本（Reels/Shorts/TikTok 共通）"
   cta: "### 📈 CTA・LINE導線"
   qa_report: "### 🛡 品質チェック結果"
+  research: "### 🔍 リサーチ結果"
+  blog_meta: "### 📰 記事メタ情報"
+  blog_body: "### 📝 記事本文"
+  note_meta: "### 🗒 note 販売設計"
+  note_free: "### 🆓 無料部分"
+  note_paid: "### 💰 有料部分"
+  sponsor_proposal: "### 🤝 協賛提案書"
+  analysis: "### 📊 週次PDCAレポート"
+  advice: "### 💡 相談役AIからのアドバイス"

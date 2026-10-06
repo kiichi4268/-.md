@@ -1,0 +1,36 @@
+# アフィリエイトリンク一覧（記事中の {{AFF:キー}} をこのリンクに置き換える）
+#
+# - url が「【要編集】」のままのキーは、finalize 時に警告が出てリンクになりません
+# - 提携先（Amazonアソシエイト、楽天アフィリエイト、A8.net、もしもアフィリエイト等）の
+#   管理画面で発行したリンクを貼ってください
+# - 提携先の規約（リンクの書き方・表記ルール）に従ってください
+
+links:
+  badminton_shoes:
+    label: 初心者向けバドミントンシューズ
+    category: スポーツギア
+    url: 【要編集】
+  badminton_racket:
+    label: 初心者向けバドミントンラケット
+    category: スポーツギア
+    url: 【要編集】
+  volleyball_shoes:
+    label: バレーボールシューズ
+    category: スポーツギア
+    url: 【要編集】
+  knee_supporter:
+    label: 膝サポーター
+    category: スポーツギア
+    url: 【要編集】
+  sports_wear:
+    label: 速乾スポーツウェア
+    category: ウェア
+    url: 【要編集】
+  protein:
+    label: プロテイン
+    category: プロテイン・栄養
+    url: 【要編集】
+  sports_drink:
+    label: スポーツドリンク（粉末）
+    category: プロテイン・栄養
+    url: 【要編集】
