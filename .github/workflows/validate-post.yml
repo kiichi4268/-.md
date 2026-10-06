@@ -1,0 +1,67 @@
+name: Validate Posts & Scripts
+
+# PR の時点で、マージ後に自動投稿が失敗しないかを検証する（API は呼ばない・投稿もしない）
+#  - 追加・更新された posts/*.md: 【要編集】の残り、文字数、ハッシュタグ数、画像URL、動画ファイルの有無
+#  - scripts/ と prompts/: 構文チェックと、生成チェーン（prompt モード）がすべて組み立てられるか
+on:
+  pull_request:
+    paths:
+      - "posts/**.md"
+      - "scripts/**"
+      - "prompts/**"
+      - "data/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install pyyaml
+
+      - name: Compile scripts
+        run: python -m py_compile scripts/*.py
+
+      - name: Check changed post files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_IMAGE_URL: ${{ vars.DEFAULT_IMAGE_URL }}
+        run: |
+          files=$(git -c core.quotePath=false diff --name-only --diff-filter=AM "$BASE_SHA...$HEAD_SHA" -- 'posts/*.md' \
+            | grep -v '/README.md$' || true)
+          if [ -z "$files" ]; then
+            echo "投稿ファイルの変更はありません"
+            exit 0
+          fi
+          POST_FILE="$files" python scripts/post_to_sns.py --check
+
+      - name: Smoke-test generation chains (prompt mode)
+        run: |
+          set -e
+          event=$(sed -n '2p' data/events.csv | cut -d, -f1)
+          python scripts/generate_content.py --chain sns_set --event "$event" --out /tmp/gen/sns_set.md
+          python scripts/generate_content.py --chain fill_capacity --event "$event" --out /tmp/gen/fill.md
+          python scripts/generate_content.py --chain wordpress_seo --theme "テスト" --out /tmp/gen/wp.md
+          python scripts/generate_content.py --chain note_hybrid --theme "テスト" --out /tmp/gen/note.md
+          python scripts/generate_content.py --chain sponsor_proposal --theme "テスト" --out /tmp/gen/sponsor.md
+          printf '| 指標 | 値 |\n|---|---|\n| テスト | 1 |\n' > /tmp/gen/metrics.md
+          python scripts/generate_content.py --chain weekly_review --metrics /tmp/gen/metrics.md --out /tmp/gen/weekly.md
+          if grep -l '{{[a-z_]*}}' /tmp/gen/fill.md; then
+            echo "::error::枠埋めテンプレートに置き換わっていない変数があります"
+            grep -n '{{[a-z_]*}}' /tmp/gen/fill.md
+            exit 1
+          fi

@@ -303,7 +303,7 @@ def wrap_post_file(body: str, variables: dict) -> str:
     return (
         "---\n"
         "# 画像（公開URLのJPEG）を設定してください。カルーセルは image_urls にカンマ区切り\n"
-        "# image_url: 【要編集】\n"
+        "image_url: 【要編集】\n"
         "platforms: instagram, threads\n"
         "---\n\n"
         f"{title}\n\n{body}"
