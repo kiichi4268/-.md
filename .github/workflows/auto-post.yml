@@ -1,6 +1,7 @@
 name: Auto Post to Instagram & Threads
 
 # PR がマージされたら posts/ の投稿データを Instagram（画像・カルーセル・リール）と Threads へ投稿する
+# 結果（投稿先・リンク・エラー）は Actions の実行画面の Summary に表として表示される
 on:
   pull_request:
     types: [closed]
@@ -48,17 +49,30 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests requests-toolbelt
 
-      - name: Detect post file added in this PR
+      - name: Detect post files added in this PR
         id: detect
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MAX_POSTS: 5
         run: |
           # core.quotePath=false: 日本語ファイル名を "\343..." のようにエスケープさせない
-          file=$(git -c core.quotePath=false diff --name-only --diff-filter=AM "$BASE_SHA" "$MERGE_SHA" -- 'posts/*.md' | sort | tail -n 1)
-          echo "PR で追加・更新された投稿ファイル: ${file:-（なし。最新ファイルを使用）}"
-          echo "file=$file" >> "$GITHUB_OUTPUT"
+          # 追加・更新された投稿ファイルをすべて日付順に投稿する（既存の投稿を編集した場合も再投稿される点に注意）
+          files=$(git -c core.quotePath=false diff --name-only --diff-filter=AM "$BASE_SHA" "$MERGE_SHA" -- 'posts/*.md' \
+            | grep -v '/README.md$' | sort || true)
+          count=$(printf '%s' "$files" | grep -c . || true)
+          if [ "$count" -gt "$MAX_POSTS" ]; then
+            echo "::error::投稿ファイルが ${count} 件あります（1回のマージで ${MAX_POSTS} 件まで）。PR を分けるか workflow_dispatch で個別に投稿してください"
+            exit 1
+          fi
+          echo "PR で追加・更新された投稿ファイル（${count}件）:"
+          printf '%s\n' "${files:-（なし。最新ファイルを使用）}"
+          {
+            echo "files<<EOF"
+            printf '%s\n' "$files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Post to Instagram & Threads
         env:
@@ -68,6 +82,6 @@ jobs:
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           DEFAULT_IMAGE_URL: ${{ vars.DEFAULT_IMAGE_URL }}
           GRAPH_API_VERSION: ${{ vars.GRAPH_API_VERSION || 'v23.0' }}
-          POST_FILE: ${{ steps.detect.outputs.file || inputs.post_file }}
+          POST_FILE: ${{ steps.detect.outputs.files || inputs.post_file }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
         run: python scripts/post_to_sns.py

@@ -14,9 +14,13 @@
   THREADS_USER_ID       Threads ユーザーID（未指定ならトークンから自動取得）
   GRAPH_API_VERSION     Graph API のバージョン（既定: v23.0）
   THREADS_API_VERSION   Threads API のバージョン（既定: v1.0）
-  POST_FILE             投稿するファイルを明示指定（未指定なら posts/ 内の最新ファイル）
+  POST_FILE             投稿するファイルを明示指定（改行区切りで複数可。未指定なら posts/ 内の最新ファイル）
   DEFAULT_IMAGE_URL     投稿ファイルに画像・動画の指定が無い場合に使う画像URL
   DRY_RUN               "true" の場合、APIを呼ばずに投稿内容のみ表示（動画の変換は行う）
+  GITHUB_STEP_SUMMARY   GitHub Actions 上では投稿結果の表をジョブのサマリーに書き出す
+
+検証だけ行う（PR 時のチェック用。API・動画変換・ネットワークを使わない）:
+  python scripts/post_to_sns.py --check posts/a.md posts/b.md
 
 投稿ファイルの形式（例: posts/2025-08-16_バドミントン_イベントレポート.md）:
   ---
@@ -107,6 +111,15 @@ def extract_section(body: str, heading: re.Pattern) -> str:
     rest = body[m.end():]
     nxt = re.search(r"^#{1,3}\s", rest, re.MULTILINE)
     return clean_text(rest[: nxt.start()] if nxt else rest)
+
+
+def remove_section(body: str, heading: re.Pattern) -> str:
+    """見出しとその配下（次の ###以上の見出しまで）を取り除く。"""
+    m = heading.search(body)
+    if not m:
+        return body
+    nxt = re.search(r"^#{1,3}\s", body[m.end():], re.MULTILINE)
+    return body[: m.start()] + (body[m.end() + nxt.start():] if nxt else "")
 
 
 def extract_caption(body: str) -> str:
@@ -211,24 +224,73 @@ def prepare_reel_video(src: Path, out_dir: Path, fit: str = "pad") -> Path:
 
 # ---------------------------------------------------------------- API クライアント
 
+# Graph API / Threads API のエラーコード → 対処のヒント
+ERROR_HINTS = {
+    190: "アクセストークンが無効または期限切れです。トークンを再発行して Secrets を更新してください",
+    102: "セッションが無効です。トークンを再発行してください",
+    10: "権限が不足しています。アプリの権限（instagram_content_publish 等）を確認してください",
+    200: "権限が不足しています。アプリの権限とアカウントの連携を確認してください",
+    4: "API の呼び出し回数の上限に達しました。時間をおいて再実行してください",
+    17: "API の呼び出し回数の上限に達しました。時間をおいて再実行してください",
+    32: "API の呼び出し回数の上限に達しました。時間をおいて再実行してください",
+    613: "API の呼び出し回数の上限に達しました。時間をおいて再実行してください",
+    9004: "画像・動画のURLを Meta が取得できませんでした。公開URL（ログイン不要・JPEG）か確認してください",
+    9007: "メディアの準備ができていません。少し待ってから再実行してください",
+    36003: "画像の縦横比が対応範囲外です（4:5〜1.91:1）。画像をトリミングしてください",
+    36001: "画像の解像度が対応範囲外です。画像サイズを確認してください",
+}
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def describe_api_error(code: int, detail: str) -> str:
+    try:
+        err = json.loads(detail).get("error", {})
+    except (json.JSONDecodeError, AttributeError):
+        return detail
+    parts = [err.get("message", detail)]
+    sub = err.get("error_subcode")
+    hint = ERROR_HINTS.get(err.get("code")) or ERROR_HINTS.get(sub)
+    if err.get("error_user_msg"):
+        parts.append(err["error_user_msg"])
+    if hint:
+        parts.append(f"💡 {hint}")
+    ids = f"code={err.get('code')}" + (f", subcode={sub}" if sub else "")
+    return f"{' / '.join(parts)} ({ids})"
+
+
 def http_request(method: str, url: str, params: dict = None, data: bytes = None, headers: dict = None,
-                 timeout: int = 60) -> dict:
+                 timeout: int = 60, retries: int = 2) -> dict:
+    """API を呼ぶ。429・5xx・通信エラーは retries 回まで指数バックオフで再試行する。"""
     params = params or {}
     if method == "GET":
-        req = urllib.request.Request(f"{url}?{urllib.parse.urlencode(params)}", method="GET")
+        req_url, body = f"{url}?{urllib.parse.urlencode(params)}", None
     elif data is not None:
-        req = urllib.request.Request(url, data=data, method=method)
+        req_url, body = url, data
     else:
-        req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(), method=method)
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            return json.loads(res.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
-        path = urllib.parse.urlparse(url).path
-        raise RuntimeError(f"API エラー ({e.code}) {method} {path}: {detail}") from None
+        req_url, body = url, urllib.parse.urlencode(params).encode()
+    path = urllib.parse.urlparse(url).path
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(req_url, data=body, method=method)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return json.loads(res.read().decode())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")
+            if e.code in RETRY_STATUS and attempt < retries:
+                wait = 2 ** (attempt + 1)
+                print(f"↻ API エラー ({e.code}) {method} {path}。{wait}秒後に再試行します", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"API エラー ({e.code}) {method} {path}: {describe_api_error(e.code, detail)}") from None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < retries:
+                wait = 2 ** (attempt + 1)
+                print(f"↻ 通信エラー {method} {path}: {e}。{wait}秒後に再試行します", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"通信エラー {method} {path}: {e}") from None
 
 
 class GraphClient:
@@ -240,8 +302,8 @@ class GraphClient:
         self.version = version
         self.base = f"{GRAPH_BASE}/{version}"
 
-    def _request(self, method: str, path: str, params: dict) -> dict:
-        return http_request(method, f"{self.base}/{path}", {**params, "access_token": self.token})
+    def _request(self, method: str, path: str, params: dict, retries: int = 2) -> dict:
+        return http_request(method, f"{self.base}/{path}", {**params, "access_token": self.token}, retries=retries)
 
     def create_container(self, **params) -> str:
         return self._request("POST", f"{self.ig_user_id}/media", params)["id"]
@@ -258,10 +320,17 @@ class GraphClient:
         raise TimeoutError(f"メディアコンテナの処理がタイムアウトしました: {container_id}")
 
     def publish(self, creation_id: str) -> str:
-        return self._request("POST", f"{self.ig_user_id}/media_publish", {"creation_id": creation_id})["id"]
+        # 公開は再試行しない（応答だけ失われた場合に二重投稿になるため）
+        return self._request("POST", f"{self.ig_user_id}/media_publish", {"creation_id": creation_id}, retries=0)["id"]
 
     def media_url(self, media_id: str) -> str:
         return self._request("GET", media_id, {"fields": "media_url"}).get("media_url", "")
+
+    def permalink(self, media_id: str) -> str:
+        try:
+            return self._request("GET", media_id, {"fields": "permalink"}).get("permalink", "")
+        except RuntimeError:
+            return ""
 
     def post(self, image_urls: list, caption: str) -> str:
         if len(image_urls) == 1:
@@ -303,8 +372,8 @@ class ThreadsClient:
         self.base = f"{THREADS_BASE}/{version}"
         self.user_id = user_id or self._request("GET", "me", {"fields": "id"})["id"]
 
-    def _request(self, method: str, path: str, params: dict) -> dict:
-        return http_request(method, f"{self.base}/{path}", {**params, "access_token": self.token})
+    def _request(self, method: str, path: str, params: dict, retries: int = 2) -> dict:
+        return http_request(method, f"{self.base}/{path}", {**params, "access_token": self.token}, retries=retries)
 
     def create_container(self, **params) -> str:
         return self._request("POST", f"{self.user_id}/threads", params)["id"]
@@ -323,7 +392,14 @@ class ThreadsClient:
         raise TimeoutError(f"Threads コンテナの処理がタイムアウトしました: {container_id}")
 
     def publish(self, creation_id: str) -> str:
-        return self._request("POST", f"{self.user_id}/threads_publish", {"creation_id": creation_id})["id"]
+        # 公開は再試行しない（応答だけ失われた場合に二重投稿になるため）
+        return self._request("POST", f"{self.user_id}/threads_publish", {"creation_id": creation_id}, retries=0)["id"]
+
+    def permalink(self, media_id: str) -> str:
+        try:
+            return self._request("GET", media_id, {"fields": "permalink"}).get("permalink", "")
+        except RuntimeError:
+            return ""
 
     def post(self, text: str, image_urls: list = None, video_url: str = None) -> str:
         if video_url:
@@ -343,18 +419,89 @@ class ThreadsClient:
         return self.publish(container)
 
 
-# ---------------------------------------------------------------- メイン
+# ---------------------------------------------------------------- 検証
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="posts/ の投稿を Instagram・Threads へ投稿する")
-    parser.add_argument("--file", default=os.environ.get("POST_FILE") or None, help="投稿するMarkdownファイル")
-    parser.add_argument("--dry-run", action="store_true", default=os.environ.get("DRY_RUN", "").lower() == "true",
-                        help="APIを呼ばずに投稿内容を表示する")
-    args = parser.parse_args()
+def check_post(post_file: Path) -> tuple:
+    """投稿ファイルを API を使わずに検証する。(errors, warnings) を返す。"""
+    errors, warnings = [], []
+    meta, body = parse_front_matter(post_file.read_text(encoding="utf-8"))
+    caption = extract_caption(body)
+    try:
+        validate_caption(caption)
+    except ValueError as e:
+        errors.append(str(e))
+    threads_raw = extract_section(body, THREADS_HEADING)
+    if PLACEHOLDER in threads_raw:
+        errors.append(f"Threads 投稿文に未編集の「{PLACEHOLDER}」が残っています")
+    if len(threads_raw) > THREADS_MAX_LEN:
+        warnings.append(f"Threads 投稿文が{len(threads_raw)}文字です（{THREADS_MAX_LEN}文字で切り詰められます）")
+    for key, value in meta.items():
+        if PLACEHOLDER in value:
+            errors.append(f"フロントマター `{key}` が未編集です（「{PLACEHOLDER}」）")
+    try:
+        get_platforms(meta)
+    except ValueError as e:
+        errors.append(str(e))
 
-    post_file = Path(args.file) if args.file else find_latest_post(POSTS_DIR)
+    if meta.get("video"):
+        if not (REPO_ROOT / meta["video"]).is_file():
+            errors.append(f"動画ファイルが見つかりません: {meta['video']}")
+    elif not meta.get("video_url"):
+        raw = meta.get("image_urls") or meta.get("image_url") or ""
+        urls = [u.strip() for u in raw.split(",") if u.strip()]
+        if not urls:
+            if os.environ.get("DEFAULT_IMAGE_URL"):
+                warnings.append("画像の指定が無いため DEFAULT_IMAGE_URL の画像で投稿されます")
+            else:
+                errors.append("画像・動画の指定がありません（image_url / image_urls / video / video_url）")
+        if len(urls) > 10:
+            errors.append("カルーセル投稿の画像は最大10枚です")
+        for u in urls:
+            if not u.startswith("https://"):
+                errors.append(f"画像URLは https:// で始まる公開URLにしてください: {u}")
+            elif urllib.parse.urlparse(u).hostname in ("example.com", "www.example.com"):
+                errors.append(f"画像URLがサンプル（example.com）のままです: {u}")
+
+    if PLACEHOLDER in remove_section(remove_section(body, CAPTION_HEADING), THREADS_HEADING):
+        warnings.append(f"本文の他のセクション（企画意図・台本など）に「{PLACEHOLDER}」が残っています（投稿はされません）")
+    return errors, warnings
+
+
+def run_checks(files: list) -> int:
+    failed = 0
+    rows = []
+    for f in files:
+        errors, warnings = check_post(f)
+        status = "❌" if errors else ("⚠️" if warnings else "✅")
+        print(f"{status} {f.relative_to(REPO_ROOT) if f.is_relative_to(REPO_ROOT) else f}")
+        for e in errors:
+            print(f"   ❌ {e}")
+            print(f"::error file={f.relative_to(REPO_ROOT) if f.is_relative_to(REPO_ROOT) else f}::{e}")
+        for w in warnings:
+            print(f"   ⚠ {w}")
+        rows.append((f.name, status, "<br>".join(errors + warnings) or "問題なし"))
+        failed += bool(errors)
+    write_summary("## 🔎 投稿ファイルの事前チェック", ["ファイル", "結果", "内容"], rows)
+    return 1 if failed else 0
+
+
+def write_summary(title: str, header: list, rows: list) -> None:
+    """GitHub Actions のジョブサマリーに表を書き出す（ローカル実行では何もしない）。"""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    esc = lambda v: str(v).replace("|", "\\|").replace("\n", "<br>")  # noqa: E731
+    lines = [title, "", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines += ["| " + " | ".join(esc(c) for c in row) + " |" for row in rows]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n\n")
+
+
+# ---------------------------------------------------------------- 投稿
+
+def post_one(post_file: Path, dry_run: bool) -> list:
+    """1ファイルを投稿し、結果の行 [(投稿先, 結果, ID/リンク)] を返す。失敗時は例外に結果を添える。"""
     print(f"📄 投稿ファイル: {post_file}")
-
     meta, body = parse_front_matter(post_file.read_text(encoding="utf-8"))
     caption = extract_caption(body)
     validate_caption(caption)
@@ -377,35 +524,41 @@ def main() -> int:
     if "threads" in platforms:
         print(f"🧵 Threads 本文（{len(threads_text)}文字）:\n" + "-" * 40 + f"\n{threads_text}\n" + "-" * 40)
 
+    results = []
     with tempfile.TemporaryDirectory() as tmp:
         upload_file = None
         if video_path and not video_url:
             upload_file = prepare_reel_video(video_path, Path(tmp), meta.get("reel_fit", "pad"))
 
-        if args.dry_run:
+        if dry_run:
             print("DRY_RUN のため投稿は行いません")
-            return 0
+            return [(p, "🧪 dry run", "") for p in platforms]
 
-        failed = False
+        ig = None
         ig_media_id = None
         if "instagram" in platforms:
             token = os.environ.get("META_ACCESS_TOKEN")
             ig_user_id = os.environ.get("IG_USER_ID")
             if not token or not ig_user_id:
-                print("META_ACCESS_TOKEN と IG_USER_ID を設定してください", file=sys.stderr)
-                return 1
+                raise RuntimeError("META_ACCESS_TOKEN と IG_USER_ID を設定してください")
             ig = GraphClient(token, ig_user_id, os.environ.get("GRAPH_API_VERSION", "v23.0"))
-            if is_reel:
-                ig_media_id = ig.post_reel(caption, video_file=upload_file, video_url=video_url)
-                print(f"✅ Instagram へリールを投稿しました (media_id: {ig_media_id})")
-            else:
-                ig_media_id = ig.post(image_urls, caption)
-                print(f"✅ Instagram へ投稿しました (media_id: {ig_media_id})")
+            try:
+                if is_reel:
+                    ig_media_id = ig.post_reel(caption, video_file=upload_file, video_url=video_url)
+                else:
+                    ig_media_id = ig.post(image_urls, caption)
+            except Exception as e:
+                results.append(("instagram", "❌ 失敗", str(e)))
+                raise PostError(str(e), results) from None
+            link = ig.permalink(ig_media_id)
+            print(f"✅ Instagram へ{'リールを' if is_reel else ''}投稿しました (media_id: {ig_media_id}) {link}")
+            results.append(("instagram", "✅ 投稿", link or ig_media_id))
 
         if "threads" in platforms:
             threads_token = os.environ.get("THREADS_ACCESS_TOKEN")
             if not threads_token:
                 print("⚠ THREADS_ACCESS_TOKEN が未設定のため Threads への投稿はスキップします", file=sys.stderr)
+                results.append(("threads", "⏭ スキップ", "THREADS_ACCESS_TOKEN 未設定"))
             else:
                 try:
                     th_video_url = video_url
@@ -418,11 +571,55 @@ def main() -> int:
                     threads = ThreadsClient(threads_token, os.environ.get("THREADS_USER_ID", ""),
                                             os.environ.get("THREADS_API_VERSION", "v1.0"))
                     th_id = threads.post(threads_text, image_urls=image_urls, video_url=th_video_url)
-                    print(f"✅ Threads へ投稿しました (id: {th_id})")
+                    link = threads.permalink(th_id)
+                    print(f"✅ Threads へ投稿しました (id: {th_id}) {link}")
+                    results.append(("threads", "✅ 投稿", link or th_id))
                 except Exception as e:  # noqa: BLE001  Instagram 側の成功は維持しつつ失敗を通知する
                     print(f"❌ Threads への投稿に失敗しました: {e}", file=sys.stderr)
-                    failed = True
+                    results.append(("threads", "❌ 失敗", str(e)))
+                    raise PostError(str(e), results) from None
+    return results
 
+
+class PostError(RuntimeError):
+    def __init__(self, message: str, results: list):
+        super().__init__(message)
+        self.results = results
+
+
+# ---------------------------------------------------------------- メイン
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="posts/ の投稿を Instagram・Threads へ投稿する")
+    parser.add_argument("files", nargs="*", help="投稿（または --check で検証）するMarkdownファイル")
+    parser.add_argument("--file", default=os.environ.get("POST_FILE") or None,
+                        help="投稿するMarkdownファイル（改行区切りで複数可）")
+    parser.add_argument("--dry-run", action="store_true", default=os.environ.get("DRY_RUN", "").lower() == "true",
+                        help="APIを呼ばずに投稿内容を表示する")
+    parser.add_argument("--check", action="store_true", help="API・動画変換を使わずに投稿ファイルを検証するだけ")
+    args = parser.parse_args()
+
+    names = list(args.files) or [ln.strip() for ln in (args.file or "").splitlines() if ln.strip()]
+    files = [Path(n) if Path(n).is_absolute() else REPO_ROOT / n for n in names] or [find_latest_post(POSTS_DIR)]
+
+    if args.check:
+        return run_checks(files)
+
+    rows, failed = [], False
+    for i, post_file in enumerate(files):
+        if i:
+            print()
+        try:
+            results = post_one(post_file, args.dry_run)
+        except PostError as e:
+            results, failed = e.results, True
+            print(f"❌ {post_file.name}: {e}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001  1件の失敗で残りの投稿を止めない
+            results, failed = [("-", "❌ 失敗", str(e))], True
+            print(f"❌ {post_file.name}: {e}", file=sys.stderr)
+        rows += [(post_file.name, *r) for r in results]
+    write_summary("## 📣 SNS 自動投稿の結果" + ("（DRY RUN）" if args.dry_run else ""),
+                  ["ファイル", "投稿先", "結果", "ID / リンク / エラー"], rows)
     return 1 if failed else 0
 
 
