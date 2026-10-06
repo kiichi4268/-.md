@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# generate_content.py の出力（必要なものだけ posts/ などへ移してコミット）
+outputs/
